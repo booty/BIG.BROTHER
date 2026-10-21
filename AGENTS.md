@@ -38,6 +38,13 @@ Do not overengineer this application. It does not need to be "production grade."
 - When superseding a memory or ADR, mark its index entry `superseded` and link the old document to its replacement. Preserve the rationale of past decisions.
 - Keep index entries in sync when creating or changing documents. Use filenames relative to the index directory.
 
+## Browser Testing
+
+- Use headless `agent-browser` for browser-based client tests and UI verification whenever it supports the required check. Check availability and read `agent-browser --help` before using it.
+- Keep browser checks repeatable: save scenarios/scripts, assertions, and results. Use ordinary test runners for non-browser unit and HTTP/WebSocket contract tests.
+- If the tool is unavailable or a required capability is unsupported, report the limitation before choosing a fallback. Continue independent work; leave affected checks pending.
+- Label checks requiring physical devices or human interaction. Synthetic media and headless checks do not prove real camera/audio behavior, mobile behavior, or support in browsers that were not exercised.
+
 ## Notes
 
 - Developer(s) will be using Codex, Claude, and other agents/harnesses. Durable project metadata (ADRs, memories, etc) should be source-controlled and agent/harness-agnostic

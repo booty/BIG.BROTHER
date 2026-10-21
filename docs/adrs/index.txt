@@ -1,0 +1,2 @@
+filename	status	summary
+20261021-go-first-backends-and-centralized-media.md	accepted	Go-first interchangeable application backends, shared centralized media, offline operation, and browser-required HTTPS.
