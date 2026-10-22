@@ -34,3 +34,7 @@ connection performs network writes outside the room mutex. Welcome precedes that
 connection's snapshots. Each client can queue up to 32 messages, and a network
 write has a five-second deadline. A stalled client whose queue fills is closed
 rather than blocking other clients' joins, departures, or updates.
+
+A recipient delivery failure is logged and that connection is closed. It does
+not reject an already-applied join, rename, or media-state update by another
+participant. The `error` message remains for invalid or unsuccessful requests.

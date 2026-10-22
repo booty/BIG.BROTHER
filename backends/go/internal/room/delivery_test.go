@@ -2,6 +2,9 @@ package room
 
 import (
 	"context"
+	"log/slog"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -38,5 +41,35 @@ func TestRoomChangesDoNotWaitForNetworkDelivery(t *testing.T) {
 	after := second.payload.(map[string]any)["participants"].([]Participant)
 	if before[0].Name != "Kitchen" || after[0].Name != "Hallway" {
 		t.Fatalf("snapshots were overwritten or reordered: %q -> %q", before[0].Name, after[0].Name)
+	}
+}
+
+func TestFailedRecipientDoesNotRejectAnotherParticipantsRename(t *testing.T) {
+	transportServer := httptest.NewServer(New(Options{}).Handler())
+	defer transportServer.Close()
+	deadSocket := dialTestClient(t, transportServer.URL)
+	defer deadSocket.CloseNow()
+	var logs synchronizedBuffer
+	r := New(Options{Logger: slog.New(slog.NewTextHandler(&logs, nil))})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	actor := &connection{room: r, ctx: ctx, cancel: cancel, origin: "https://home", outgoing: make(chan outboundMessage, 32)}
+	if err := r.join(actor, "Kitchen"); err != nil {
+		t.Fatal(err)
+	}
+	deadCtx, deadCancel := context.WithCancel(context.Background())
+	deadCancel()
+	r.participants["departing"] = &participantSession{Participant: Participant{ID: "departing", Name: "Departing"}, connection: &connection{ctx: deadCtx, cancel: deadCancel, ws: deadSocket, outgoing: make(chan outboundMessage, 32)}}
+	if err := r.rename(actor, "Hallway"); err != nil {
+		t.Fatalf("successful rename reported another recipient's delivery failure: %v", err)
+	}
+	if got := r.participants[actor.id].Name; got != "Hallway" {
+		t.Fatalf("rename was not applied: %q", got)
+	}
+	if !strings.Contains(logs.String(), "room delivery failed") {
+		t.Fatal("recipient delivery failure was not logged")
+	}
+	if err := r.rename(&connection{id: "unjoined"}, "Other"); err == nil {
+		t.Fatal("invalid requests must still return errors")
 	}
 }

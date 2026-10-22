@@ -146,9 +146,9 @@ func (r *Room) join(client *connection, name string) error {
 		}
 		return err
 	}
-	err = r.broadcastLocked()
+	r.broadcastLocked()
 	r.mu.Unlock()
-	return err
+	return nil
 }
 
 func (r *Room) rename(client *connection, name string) error {
@@ -159,7 +159,8 @@ func (r *Room) rename(client *connection, name string) error {
 		return errors.New("join the room before renaming")
 	}
 	participant.Name = normalizeName(name, participant.ID)
-	return r.broadcastLocked()
+	r.broadcastLocked()
+	return nil
 }
 
 func (r *Room) updateMediaState(client *connection, audioEnabled, videoEnabled bool) error {
@@ -171,7 +172,8 @@ func (r *Room) updateMediaState(client *connection, audioEnabled, videoEnabled b
 	}
 	participant.AudioEnabled = audioEnabled
 	participant.VideoEnabled = videoEnabled
-	return r.broadcastLocked()
+	r.broadcastLocked()
+	return nil
 }
 
 func (r *Room) updateStreamState(client *connection, ready bool) error {
@@ -182,7 +184,8 @@ func (r *Room) updateStreamState(client *connection, ready bool) error {
 		return errors.New("join the room before updating stream state")
 	}
 	participant.StreamReady = ready
-	return r.broadcastLocked()
+	r.broadcastLocked()
+	return nil
 }
 
 func (r *Room) leave(client *connection) string {
@@ -199,7 +202,7 @@ func (r *Room) leave(client *connection) string {
 	}
 	delete(r.participants, client.id)
 	client.id = ""
-	_ = r.broadcastLocked()
+	r.broadcastLocked()
 	r.mu.Unlock()
 	if r.releaseStream != nil {
 		r.releaseStream(id)
@@ -207,15 +210,11 @@ func (r *Room) leave(client *connection) string {
 	return id
 }
 
-func (r *Room) broadcastLocked() error {
-	var firstError error
+func (r *Room) broadcastLocked() {
 	for _, session := range r.participants {
 		if err := session.connection.writeMessage("participants", map[string]any{"participants": r.snapshotLocked(session.connection.origin)}); err != nil {
 			session.connection.closeNow()
-			if firstError == nil {
-				firstError = err
-			}
+			r.logger.Warn("room delivery failed", "participant_id", session.ID, "error", err)
 		}
 	}
-	return firstError
 }
