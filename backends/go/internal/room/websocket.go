@@ -3,12 +3,12 @@ package room
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
 	"net/url"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/coder/websocket"
@@ -16,6 +16,12 @@ import (
 )
 
 const maxMessageSize = 1 << 20
+const outboundQueueCapacityMessages = 32
+
+type outboundMessage struct {
+	messageType string
+	payload     any
+}
 
 type wireMessage struct {
 	Type    string          `json:"type"`
@@ -23,13 +29,13 @@ type wireMessage struct {
 }
 
 type connection struct {
-	room    *Room
-	ws      *websocket.Conn
-	ctx     context.Context
-	cancel  context.CancelFunc
-	writeMu sync.Mutex
-	id      string
-	origin  string
+	room     *Room
+	ws       *websocket.Conn
+	ctx      context.Context
+	cancel   context.CancelFunc
+	outgoing chan outboundMessage
+	id       string
+	origin   string
 }
 
 func (r *Room) serveWebSocket(w http.ResponseWriter, request *http.Request) {
@@ -43,7 +49,9 @@ func (r *Room) serveWebSocket(w http.ResponseWriter, request *http.Request) {
 		scheme = "https"
 	}
 	origin := (&url.URL{Scheme: scheme, Host: request.Host}).String()
-	client := &connection{room: r, ws: ws, ctx: ctx, cancel: cancel, origin: origin}
+	client := &connection{room: r, ws: ws, ctx: ctx, cancel: cancel, origin: origin, outgoing: make(chan outboundMessage, outboundQueueCapacityMessages)}
+	writeDone := make(chan struct{})
+	go func() { defer close(writeDone); client.writeLoop() }()
 	clientIP, localAddress, localPort := requestAddresses(request)
 	r.logger.Info("websocket connect", "client_ip", clientIP, "local_addr", localAddress, "local_port", localPort)
 	pingDone := make(chan struct{})
@@ -55,6 +63,7 @@ func (r *Room) serveWebSocket(w http.ResponseWriter, request *http.Request) {
 		cancel()
 		ws.CloseNow()
 		<-pingDone
+		<-writeDone
 		clientID := r.leave(client)
 		r.logger.Info("websocket disconnect", "client_ip", clientIP, "local_addr", localAddress, "local_port", localPort, "client_id", clientID)
 	}()
@@ -167,12 +176,36 @@ func (c *connection) pingLoop(interval, timeout time.Duration) {
 	}
 }
 
+// Queue in room-mutation order without doing network I/O under the room lock.
 func (c *connection) writeMessage(messageType string, payload any) error {
-	c.writeMu.Lock()
-	defer c.writeMu.Unlock()
-	ctx, cancel := context.WithTimeout(c.ctx, 5*time.Second)
-	defer cancel()
-	return wsjson.Write(ctx, c.ws, map[string]any{"type": messageType, "payload": payload})
+	if err := c.ctx.Err(); err != nil {
+		return err
+	}
+	select {
+	case c.outgoing <- outboundMessage{messageType: messageType, payload: payload}:
+		return nil
+	case <-c.ctx.Done():
+		return c.ctx.Err()
+	default:
+		return errors.New("client is too slow to receive room updates")
+	}
+}
+
+func (c *connection) writeLoop() {
+	for {
+		select {
+		case <-c.ctx.Done():
+			return
+		case message := <-c.outgoing:
+			ctx, cancel := context.WithTimeout(c.ctx, 5*time.Second)
+			err := wsjson.Write(ctx, c.ws, map[string]any{"type": message.messageType, "payload": message.payload})
+			cancel()
+			if err != nil {
+				c.closeNow()
+				return
+			}
+		}
+	}
 }
 
 func (c *connection) writeError(message string) error {

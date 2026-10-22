@@ -26,3 +26,11 @@ The application does not send JSON heartbeat messages. WebSocket upgrade is the 
 ## Browser media signaling
 
 The browser sends WHIP/WHEP SDP directly to the returned URLs. The Go HTTPS origin proxies only `OPTIONS`, `POST`, `PATCH`, and `DELETE` to MediaMTX on `127.0.0.1:8889`, removing the `/media/` prefix. It preserves request bodies, content types, status codes, and response/session headers, and rewrites MediaMTX `Location` values back under `/media/`. `X-Bigbrother-Session` identifies the participant that owns each WHIP/WHEP resource; departure deletes those resources through MediaMTX so stale readers and publications do not remain attached. Media payloads use the direct browser-to-MediaMTX ICE/UDP path and never pass through `/ws`.
+
+## Delivery under slow connections
+
+Room updates are queued in mutation order for each connection; one writer per
+connection performs network writes outside the room mutex. Welcome precedes that
+connection's snapshots. Each client can queue up to 32 messages, and a network
+write has a five-second deadline. A stalled client whose queue fills is closed
+rather than blocking other clients' joins, departures, or updates.
