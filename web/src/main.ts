@@ -29,6 +29,7 @@ if (!statusElement || !grid || !joinForm || !nameInput || !joinButton) {
 const tiles = new Map<string, TileView>();
 const remoteSessions = new Map<string, MediaSession>();
 const openingRemote = new Set<string>();
+const remoteAttempts = new Map<string, symbol>();
 const receiverPreferences = new Map<string, ReceiverPreferences>();
 const latestParticipants = new Map<string, Participant>();
 const blockedPlayback = new Set<string>();
@@ -45,6 +46,18 @@ let announcedStreamReady = false;
 let publicationFailed = false;
 let closing = false;
 let releasePromise: Promise<void> | undefined;
+let mediaGeneration = 0;
+let publicationGeneration = 0;
+let localMediaAttempt: symbol | undefined;
+let captureController: AbortController | undefined;
+
+function isCurrentMedia(generation: number): boolean {
+  return generation === mediaGeneration && !closing && connection !== undefined;
+}
+
+function stopStream(stream: MediaStream): void {
+  for (const track of stream.getTracks()) track.stop();
+}
 
 nameInput.value = loadFriendlyName();
 joinButton.textContent = "Join";
@@ -88,6 +101,8 @@ function updateParticipants(participants: Participant[]): void {
     const replacement = next.get(id);
     if (!replacement || replacement.streamId !== old.streamId || !replacement.streamReady) {
       blockedPlayback.delete(id);
+      remoteAttempts.delete(id);
+      openingRemote.delete(id);
       const session = remoteSessions.get(id);
       if (session) void session.close();
       remoteSessions.delete(id);
@@ -187,8 +202,16 @@ function openRemote(participant: Participant): void {
   if (openingRemote.has(participant.id) || remoteSessions.has(participant.id) || !participant.streamReady) return;
   const ownerStreamId = latestParticipants.get(selfId)?.streamId;
   if (!ownerStreamId) return;
+  const generation = mediaGeneration;
+  const attempt = Symbol();
+  remoteAttempts.set(participant.id, attempt);
+  const isCurrent = () => isCurrentMedia(generation)
+    && remoteAttempts.get(participant.id) === attempt
+    && latestParticipants.get(participant.id)?.streamId === participant.streamId
+    && latestParticipants.get(participant.id)?.streamReady === true;
   openingRemote.add(participant.id);
   void subscribeMedia(participant.readUrl, ownerStreamId, (stream) => {
+    if (!isCurrent()) return;
     const preferences = receiverPreferences.get(participant.id) ?? { audioMuted: false, videoHidden: false };
     for (const track of stream.getAudioTracks()) track.enabled = !preferences.audioMuted;
     for (const track of stream.getVideoTracks()) track.enabled = !preferences.videoHidden;
@@ -196,15 +219,19 @@ function openRemote(participant: Participant): void {
     if (tile) {
       tile.video.srcObject = stream;
       void tile.video.play().catch(() => {
+        if (!isCurrent()) return;
         blockedPlayback.add(participant.id);
         tile.state.textContent = "Media is ready; use Join or tap the video to play";
       });
     }
   }, (state) => {
+    if (!isCurrent()) return;
     const tile = tiles.get(participant.id);
     if (tile && state === "disconnected") tile.state.textContent = "Media connection interrupted…";
     if (state === "connected" && tile) tile.state.textContent = "Connected";
     if (state === "failed") {
+      remoteAttempts.delete(participant.id);
+      openingRemote.delete(participant.id);
       if (tile) tile.state.textContent = "Media connection failed";
       const session = remoteSessions.get(participant.id);
       if (session) {
@@ -214,7 +241,7 @@ function openRemote(participant: Participant): void {
       scheduleRemoteRetry(participant.id);
     }
   }).then((session) => {
-    if (closing || latestParticipants.get(participant.id)?.streamId !== participant.streamId) {
+    if (!isCurrent()) {
       void session.close();
       return;
     }
@@ -222,16 +249,19 @@ function openRemote(participant: Participant): void {
     const tile = tiles.get(participant.id);
     if (tile && !blockedPlayback.has(participant.id)) tile.state.textContent = "Connected";
   }).catch((error: unknown) => {
+    if (!isCurrent()) return;
     const tile = tiles.get(participant.id);
     if (tile) tile.state.textContent = `Media unavailable: ${errorMessage(error)}`;
     scheduleRemoteRetry(participant.id);
   }).finally(() => {
-    openingRemote.delete(participant.id);
+    if (remoteAttempts.get(participant.id) === attempt) openingRemote.delete(participant.id);
   });
 }
 
 function scheduleRemoteRetry(participantId: string): void {
+  const generation = mediaGeneration;
   window.setTimeout(() => {
+    if (!isCurrentMedia(generation)) return;
     const current = latestParticipants.get(participantId);
     if (current?.streamReady && !remoteSessions.has(participantId)) openRemote(current);
   }, 2_000);
@@ -289,7 +319,17 @@ async function joinOrRetry(): Promise<void> {
       announcedStreamReady = false;
       const friendlyName = saveFriendlyName(nameInput!.value);
       nameInput!.value = friendlyName;
-      connection = await joinRoom(friendlyName, handleRoomMessage, handleRoomClose);
+      const generation = ++mediaGeneration;
+      const joined = await joinRoom(friendlyName, (message) => {
+        if (generation === mediaGeneration && !closing) handleRoomMessage(message);
+      }, () => {
+        if (generation === mediaGeneration) handleRoomClose();
+      });
+      if (generation !== mediaGeneration || closing) {
+        joined.close();
+        return;
+      }
+      connection = joined;
       joinButton!.textContent = "Retry media";
       nameInput!.disabled = true;
       const ownParticipant = latestParticipants.get(connection.selfId);
@@ -310,13 +350,23 @@ async function joinOrRetry(): Promise<void> {
 }
 
 async function startLocalMedia(): Promise<void> {
+  const generation = mediaGeneration;
   const ownParticipant = latestParticipants.get(selfId);
   if (!ownParticipant) throw new Error("The room did not return this participant’s media descriptor.");
+  if (localMediaAttempt) return;
+  const attempt = Symbol();
+  localMediaAttempt = attempt;
   localMediaError = "";
   localMediaNote = "";
   try {
     if (!localStream || localStream.getTracks().every((track) => track.readyState !== "live")) {
-      const capture = await captureInitialMedia(selectedAudioDeviceId, selectedVideoDeviceId);
+      const controller = new AbortController();
+      captureController = controller;
+      const capture = await captureInitialMedia(selectedAudioDeviceId, selectedVideoDeviceId, controller.signal);
+      if (!isCurrentMedia(generation)) {
+        stopStream(capture.stream);
+        return;
+      }
       localStream = capture.stream;
       if (capture.errors.length > 0) localMediaNote = "One device is unavailable; using the available media.";
       watchLocalTracks(capture.stream);
@@ -326,28 +376,34 @@ async function startLocalMedia(): Promise<void> {
     const tile = tiles.get(selfId);
     if (tile) tile.video.srcObject = localStream;
     await refreshDeviceLists();
+    if (!isCurrentMedia(generation)) return;
     announceMediaState();
     setStatus("Publishing available camera and microphone…", "working");
-    publication = await createPublication(ownParticipant);
+    publication = await createPublication(ownParticipant, generation);
     announceStreamReady(true);
     announceMediaState();
     setStatus(localMediaError || localMediaNote || "You are connected to the room.", localMediaError || localMediaNote ? "error" : "ready");
     updateParticipants([...latestParticipants.values()]);
     await retryPlayback();
   } catch (error) {
+    if (!isCurrentMedia(generation)) return;
     localMediaError = errorMessage(error);
     announceMediaState();
     announceStreamReady(false);
     setStatus(`Room is connected; media is unavailable: ${localMediaError}`, "error");
     updateParticipants([...latestParticipants.values()]);
+  } finally {
+    if (localMediaAttempt === attempt) localMediaAttempt = undefined;
   }
 }
 
-async function createPublication(participant: Participant): Promise<MediaSession> {
+async function createPublication(participant: Participant, generation: number): Promise<MediaSession> {
+  const attempt = ++publicationGeneration;
   const stream = localStream;
   if (!stream) throw new Error("No local media is available to publish.");
   publicationFailed = false;
   const session = await publishMedia(participant.publishUrl, participant.streamId, stream, (state) => {
+    if (!isCurrentMedia(generation) || attempt !== publicationGeneration) return;
     if (state === "failed") {
       publicationFailed = true;
       const failedPublication = publication;
@@ -367,6 +423,10 @@ async function createPublication(participant: Participant): Promise<MediaSession
       setStatus("Your media connection was interrupted…", "error");
     }
   });
+  if (!isCurrentMedia(generation) || attempt !== publicationGeneration) {
+    await session.close();
+    throw new Error("The media operation belongs to a closed room session.");
+  }
   if (publicationFailed) {
     await session.close();
     throw new Error("The media connection failed during publication.");
@@ -393,22 +453,33 @@ function watchLocalTracks(stream: MediaStream): void {
 }
 
 async function switchDevice(kind: DeviceKind, deviceId: string): Promise<void> {
-  if (!connection) return;
+  if (!connection || localMediaAttempt) return;
+  const attempt = Symbol();
+  localMediaAttempt = attempt;
+  const generation = mediaGeneration;
   const oldStream = localStream ?? new MediaStream();
   const oldTracks = kind === "audio" ? oldStream.getAudioTracks() : oldStream.getVideoTracks();
   const oldTrack = oldTracks.find((track) => track.readyState === "live");
   let newTrack: MediaStreamTrack | undefined;
   try {
     newTrack = await captureDevice(kind, deviceId);
+    if (!isCurrentMedia(generation)) {
+      newTrack.stop();
+      return;
+    }
     if (oldTrack) newTrack.enabled = oldTrack.enabled;
     if (publication && oldTrack) {
       await publication.replaceTrack(kind, newTrack);
+      if (!isCurrentMedia(generation)) {
+        newTrack.stop();
+        return;
+      }
       oldStream.removeTrack(oldTrack);
       oldStream.addTrack(newTrack);
       oldTrack.stop();
       localStream = oldStream;
     } else {
-      await republishWithDevice(oldStream, newTrack, kind);
+      await republishWithDevice(oldStream, newTrack, kind, generation);
     }
     if (kind === "audio") selectedAudioDeviceId = deviceId;
     else selectedVideoDeviceId = deviceId;
@@ -417,18 +488,23 @@ async function switchDevice(kind: DeviceKind, deviceId: string): Promise<void> {
     watchLocalTracks(new MediaStream([newTrack]));
     announceMediaState();
     await refreshDeviceLists();
+    if (!isCurrentMedia(generation)) return;
     updateParticipants([...latestParticipants.values()]);
     setStatus("Device changed.", "ready");
   } catch (error) {
     if (newTrack && newTrack.readyState === "live" && !localStream?.getTracks().includes(newTrack)) newTrack.stop();
+    if (!isCurrentMedia(generation)) return;
     localMediaError = `Could not switch ${kind === "audio" ? "microphone" : "camera"}: ${errorMessage(error)}`;
     await refreshDeviceLists();
+    if (!isCurrentMedia(generation)) return;
     updateParticipants([...latestParticipants.values()]);
     setStatus(`${localMediaError} The current room and media remain available.`, "error");
+  } finally {
+    if (localMediaAttempt === attempt) localMediaAttempt = undefined;
   }
 }
 
-async function republishWithDevice(oldStream: MediaStream, newTrack: MediaStreamTrack, kind: DeviceKind): Promise<void> {
+async function republishWithDevice(oldStream: MediaStream, newTrack: MediaStreamTrack, kind: DeviceKind, generation: number): Promise<void> {
   const ownParticipant = latestParticipants.get(selfId);
   if (!ownParticipant) throw new Error("The room participant is no longer available.");
   const nextStream = new MediaStream([
@@ -438,24 +514,35 @@ async function republishWithDevice(oldStream: MediaStream, newTrack: MediaStream
   const oldPublication = publication;
   if (oldPublication) {
     announceStreamReady(false);
+    ++publicationGeneration;
     await oldPublication.close();
+    if (!isCurrentMedia(generation)) {
+      newTrack.stop();
+      throw new Error("The room closed while changing devices.");
+    }
     publication = undefined;
   }
   try {
     localStream = nextStream;
-    publication = await createPublication(ownParticipant);
+    publication = await createPublication(ownParticipant, generation);
     for (const track of oldStream.getTracks()) {
       if (track.kind === kind && track !== newTrack) track.stop();
     }
     announceStreamReady(true);
   } catch (error) {
+    if (!isCurrentMedia(generation)) {
+      stopStream(oldStream);
+      newTrack.stop();
+      throw error;
+    }
     localStream = oldStream;
     newTrack.stop();
     if (oldPublication && oldStream.getTracks().some((track) => track.readyState === "live")) {
       try {
-        publication = await createPublication(ownParticipant);
+        publication = await createPublication(ownParticipant, generation);
         announceStreamReady(true);
       } catch {
+        if (!isCurrentMedia(generation)) throw error;
         publication = undefined;
         announceStreamReady(false);
       }
@@ -521,19 +608,30 @@ function errorMessage(error: unknown): string {
 }
 
 async function releaseMedia(closeRoom = false): Promise<void> {
-  if (closing) return;
   closing = true;
+  captureController?.abort();
+  captureController = undefined;
+  ++mediaGeneration;
+  ++publicationGeneration;
   const currentPublication = publication;
+  const currentRemoteSessions = [...remoteSessions.values()];
+  const currentStream = localStream;
   publication = undefined;
-  await currentPublication?.close();
-  await Promise.all([...remoteSessions.values()].map((session) => session.close()));
-  remoteSessions.clear();
-  for (const track of localStream?.getTracks() ?? []) track.stop();
   localStream = undefined;
+  remoteSessions.clear();
+  openingRemote.clear();
+  remoteAttempts.clear();
+  localMediaAttempt = undefined;
+  // Release device ownership immediately; signaling cleanup may still be pending.
+  if (currentStream) stopStream(currentStream);
   if (closeRoom) {
     connection?.close();
     connection = undefined;
   }
+  await Promise.all([
+    currentPublication?.close(),
+    ...currentRemoteSessions.map((session) => session.close()),
+  ]);
 }
 
 joinForm.addEventListener("submit", (event) => {

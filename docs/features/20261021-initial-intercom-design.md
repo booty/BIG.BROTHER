@@ -62,6 +62,8 @@ The application assigns an opaque, path-safe `streamId` per participant. The par
 - Handle absent/disconnected devices and failed device changes without losing the room UI. Stop obsolete local tracks after successful replacement and on exit.
 - Keep remote audio separate from the muted local preview to avoid self-echo.
 
+Pending capture, publication, device changes, and subscriptions belong to a particular room generation. Teardown invalidates that generation and stops owned tracks immediately, before waiting for signaling cleanup. Late resources must be stopped/closed instead of attaching to a closed or reconnected room. Older callbacks and retries must not modify the new session.
+
 Initial mobile support means foreground browser use. Test backgrounding, locking, and resuming; do not promise continuous background camera/microphone operation.
 
 ## Launch and offline operation

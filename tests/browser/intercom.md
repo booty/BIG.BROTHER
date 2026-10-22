@@ -9,3 +9,16 @@ BASE_URL=https://localhost:18445 scripts/test-browser
 ```
 
 The 2026-10-21 run passed with agent-browser 0.39.1 and Chrome for Testing 156.0.8078.47. It checks that successful device selection uses the requested device ID and ends the replaced track, and that an unavailable camera leaves both participant tiles and their live tracks intact. The test uses fake media and `--ignore-https-errors`; it does not verify physical device removal, trusted CA installation, Firefox/Safari, Android/iOS behavior, mobile backgrounding, or a six-tile layout. Those checks remain labeled pending in the implementation plan.
+
+## Pending-media cleanup regression
+
+Run `node tests/browser/media-lifecycle.cjs` with the frontend dependencies installed
+and `agent-browser` available. It bundles the current application code into a
+disposable fixture under ignored `tmp/`, substituting capture and transport only
+to control completion timing. Headless browser assertions cover capture resolving
+after disconnect, publication resolving after disconnect, a pending device
+switch, an old subscription resolving after reconnect, canceled device republishing,
+and the real capture helper with partial fallback capture or a late rejection. Live tracks must stop,
+late sessions must close, and old work must not overwrite the new room state.
+This is lifecycle coverage with synthetic tracks, not real-device/media-server
+interoperability or certificate-trust validation.

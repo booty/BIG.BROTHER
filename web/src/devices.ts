@@ -14,35 +14,55 @@ export async function enumerateDevices(): Promise<AvailableDevices> {
   };
 }
 
-export async function captureInitialMedia(audioDeviceId = "", videoDeviceId = ""): Promise<{ stream: MediaStream; errors: string[] }> {
+export async function captureInitialMedia(audioDeviceId = "", videoDeviceId = "", signal?: AbortSignal): Promise<{ stream: MediaStream; errors: string[] }> {
   if (!navigator.mediaDevices?.getUserMedia) throw new Error("This browser does not provide camera or microphone access.");
   const constraints: MediaStreamConstraints = {
     audio: deviceConstraint(audioDeviceId),
     video: deviceConstraint(videoDeviceId),
   };
+  const capturedStreams: MediaStream[] = [];
+  const stopCaptured = () => {
+    for (const stream of capturedStreams) for (const track of stream.getTracks()) track.stop();
+  };
+  const capture = async (requested: MediaStreamConstraints): Promise<MediaStream> => {
+    signal?.throwIfAborted();
+    const stream = await navigator.mediaDevices.getUserMedia(requested);
+    capturedStreams.push(stream);
+    if (signal?.aborted) {
+      stopCaptured();
+      signal.throwIfAborted();
+    }
+    return stream;
+  };
+  signal?.addEventListener("abort", stopCaptured, { once: true });
   try {
-    return { stream: await navigator.mediaDevices.getUserMedia(constraints), errors: [] };
-  } catch (bothError) {
-    const [audioResult, videoResult] = await Promise.allSettled([
-      navigator.mediaDevices.getUserMedia({ audio: deviceConstraint(audioDeviceId), video: false }),
-      navigator.mediaDevices.getUserMedia({ audio: false, video: deviceConstraint(videoDeviceId) }),
-    ]);
-    const stream = new MediaStream();
-    if (audioResult.status === "fulfilled") {
-      for (const track of audioResult.value.getAudioTracks()) stream.addTrack(track);
+    try {
+      return { stream: await capture(constraints), errors: [] };
+    } catch (bothError) {
+      signal?.throwIfAborted();
+      const [audioResult, videoResult] = await Promise.allSettled([
+        capture({ audio: deviceConstraint(audioDeviceId), video: false }),
+        capture({ audio: false, video: deviceConstraint(videoDeviceId) }),
+      ]);
+      const stream = new MediaStream();
+      if (audioResult.status === "fulfilled") {
+        for (const track of audioResult.value.getAudioTracks()) stream.addTrack(track);
+      }
+      if (videoResult.status === "fulfilled") {
+        for (const track of videoResult.value.getVideoTracks()) stream.addTrack(track);
+      }
+      if (stream.getTracks().length === 0) {
+        throw new Error(`No camera or microphone is available: ${errorMessage(bothError)}`);
+      }
+      return {
+        stream,
+        errors: [audioResult, videoResult]
+          .filter((result): result is PromiseRejectedResult => result.status === "rejected")
+          .map((result) => errorMessage(result.reason)),
+      };
     }
-    if (videoResult.status === "fulfilled") {
-      for (const track of videoResult.value.getVideoTracks()) stream.addTrack(track);
-    }
-    if (stream.getTracks().length === 0) {
-      throw new Error(`No camera or microphone is available: ${errorMessage(bothError)}`);
-    }
-    return {
-      stream,
-      errors: [audioResult, videoResult]
-        .filter((result): result is PromiseRejectedResult => result.status === "rejected")
-        .map((result) => errorMessage(result.reason)),
-    };
+  } finally {
+    signal?.removeEventListener("abort", stopCaptured);
   }
 }
 
