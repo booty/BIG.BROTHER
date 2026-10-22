@@ -1,0 +1,12 @@
+{
+  "name": "bigbrother-web",
+  "private": true,
+  "scripts": {
+    "build": "esbuild src/main.ts --bundle --target=es2022 --outfile=dist/app.js && esbuild src/styles.css --bundle --outfile=dist/app.css",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "esbuild": "0.27.7",
+    "typescript": "6.0.3"
+  }
+}

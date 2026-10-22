@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <title>BIG.BROTHER</title>
+    <link rel="stylesheet" href="/app.css" />
+  </head>
+  <body>
+    <main class="app" aria-labelledby="title">
+      <header class="topbar">
+        <div class="brand">
+          <div class="mark" aria-hidden="true">BB</div>
+          <div>
+            <h1 id="title">BIG.BROTHER</h1>
+            <p>Home intercom</p>
+          </div>
+        </div>
+        <div id="room-status" class="status" role="status" aria-live="polite">Connecting to the room…</div>
+      </header>
+      <form id="join-form" class="join-form">
+        <label for="friendly-name">Your name</label>
+        <input id="friendly-name" name="name" maxlength="48" autocomplete="nickname" placeholder="Guest name" />
+        <button id="join-button" type="submit">Join</button>
+      </form>
+      <section id="participant-grid" class="participant-grid" aria-label="Room participants"></section>
+    </main>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

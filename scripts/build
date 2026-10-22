@@ -1,0 +1,122 @@
+#!/bin/sh
+set -eu
+
+root_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
+target=""
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --target)
+      [ "$#" -ge 2 ] || { printf '%s\n' "missing value for --target" >&2; exit 2; }
+      target=$2
+      shift 2
+      ;;
+    --target=*)
+      target=${1#--target=}
+      shift
+      ;;
+    *)
+      printf 'unknown argument: %s\n' "$1" >&2
+      exit 2
+      ;;
+  esac
+done
+
+case "$target" in
+  linux/arm64|linux/amd64|darwin/arm64) ;;
+  *)
+    printf 'unsupported target %s; choose linux/arm64, linux/amd64, or darwin/arm64\n' "$target" >&2
+    exit 2
+    ;;
+esac
+
+goos=${target%/*}
+goarch=${target#*/}
+target_dir=${target%/*}-${target#*/}
+out_dir="$root_dir/tmp/build/$target_dir"
+media_version=1.21.2
+
+case "$target" in
+  linux/arm64)
+    media_asset=linux_arm64
+    media_sha256=180a235374a548d9133cdd5e20f5dbd8b01317be1c86e0d7e66df585dc42ed6f
+    ;;
+  linux/amd64)
+    media_asset=linux_amd64
+    media_sha256=121be6e00397e473a95d83c75f4fcd3819a6af3b0e1a50889cba43ab4fab6a27
+    ;;
+  darwin/arm64)
+    media_asset=darwin_arm64
+    media_sha256=7d0d0c5c11527cbd10bde1c3d728864eb0334a9b653566cd73c0259750cbf093
+    ;;
+esac
+
+media_download_dir="$root_dir/tmp/downloads/mediamtx/v$media_version/$media_asset"
+media_archive_name="mediamtx_v${media_version}_${media_asset}.tar.gz"
+media_archive="$media_download_dir/$media_archive_name"
+media_extract_dir="$media_download_dir/extracted"
+media_binary="$media_extract_dir/mediamtx"
+
+mkdir -p "$out_dir/web"
+(
+  cd "$root_dir/web"
+  npm ci
+  npm run build
+  npm run typecheck
+)
+cp "$root_dir/web/index.html" "$out_dir/web/index.html"
+cp "$root_dir/web/dist/app.js" "$out_dir/web/app.js"
+cp "$root_dir/web/dist/app.css" "$out_dir/web/app.css"
+(
+  cd "$root_dir/backends/go"
+  GOMODCACHE="$root_dir/tmp/go-mod-cache" GOCACHE="$root_dir/tmp/go-build-cache" GOOS="$goos" GOARCH="$goarch" CGO_ENABLED=0 go build -trimpath -o "$out_dir/bigbrother" ./cmd/bigbrother
+)
+
+if [ ! -f "$root_dir/media/mediamtx.yml" ]; then
+  printf '%s\n' "MediaMTX config is missing at $root_dir/media/mediamtx.yml" >&2
+  exit 1
+fi
+
+if [ ! -f "$media_archive" ]; then
+  mkdir -p "$media_download_dir"
+  if ! command -v curl >/dev/null 2>&1; then
+    printf '%s\n' "curl is required to download the pinned MediaMTX $target binary during the build." >&2
+    exit 1
+  fi
+  curl --fail --location --retry 2 --silent --show-error \
+    "https://github.com/bluenviron/mediamtx/releases/download/v$media_version/$media_archive_name" \
+    --output "$media_archive"
+fi
+
+if command -v sha256sum >/dev/null 2>&1; then
+  actual_media_sha256=$(sha256sum "$media_archive" | awk '{print $1}')
+elif command -v shasum >/dev/null 2>&1; then
+  actual_media_sha256=$(shasum -a 256 "$media_archive" | awk '{print $1}')
+else
+  printf '%s\n' "sha256sum or shasum is required to verify the MediaMTX release archive." >&2
+  exit 1
+fi
+
+if [ "$actual_media_sha256" != "$media_sha256" ]; then
+  printf 'MediaMTX checksum mismatch for %s: expected %s, got %s\n' \
+    "$media_archive_name" "$media_sha256" "$actual_media_sha256" >&2
+  exit 1
+fi
+
+if [ ! -x "$media_binary" ]; then
+  mkdir -p "$media_extract_dir"
+  tar -xzf "$media_archive" -C "$media_extract_dir"
+fi
+
+if [ ! -x "$media_binary" ] || [ ! -f "$media_extract_dir/LICENSE" ]; then
+  printf 'MediaMTX archive is missing the executable or license for %s\n' "$target" >&2
+  exit 1
+fi
+
+mkdir -p "$out_dir/media"
+cp "$media_binary" "$out_dir/media/mediamtx"
+cp "$media_extract_dir/LICENSE" "$out_dir/media/LICENSE"
+cp "$root_dir/media/mediamtx.yml" "$out_dir/media/mediamtx.yml"
+printf 'v%s\n' "$media_version" > "$out_dir/media/VERSION"
+
+printf 'Built %s in %s\n' "$target" "$out_dir"

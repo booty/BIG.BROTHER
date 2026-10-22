@@ -1,0 +1,116 @@
+#!/bin/sh
+set -eu
+
+config_dir=""
+hosts=""
+ips=""
+replace_server_cert=0
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --config-dir)
+      [ "$#" -ge 2 ] || { printf '%s\n' "missing value for --config-dir" >&2; exit 2; }
+      config_dir=$2
+      shift 2
+      ;;
+    --host)
+      [ "$#" -ge 2 ] || { printf '%s\n' "missing value for --host" >&2; exit 2; }
+      hosts=${hosts}${hosts:+,}$2
+      shift 2
+      ;;
+    --ip)
+      [ "$#" -ge 2 ] || { printf '%s\n' "missing value for --ip" >&2; exit 2; }
+      ips=${ips}${ips:+,}$2
+      shift 2
+      ;;
+    --replace-server-cert)
+      replace_server_cert=1
+      shift
+      ;;
+    *)
+      printf 'unknown argument: %s\n' "$1" >&2
+      exit 2
+      ;;
+  esac
+done
+
+if [ -z "$config_dir" ]; then
+  if [ "$(uname -s)" = "Darwin" ]; then
+    config_base=${XDG_CONFIG_HOME:-"$HOME/Library/Application Support"}
+  else
+    config_base=${XDG_CONFIG_HOME:-"$HOME/.config"}
+  fi
+  config_dir="$config_base/bigbrother"
+fi
+
+if [ -z "$hosts" ] && [ -z "$ips" ]; then
+  printf '%s\n' 'provide at least one --host or --ip that clients will use to reach this server' >&2
+  exit 2
+fi
+
+tls_dir="$config_dir/tls"
+mkdir -p "$tls_dir"
+ca_key="$tls_dir/ca.key"
+ca_cert="$tls_dir/ca.crt"
+server_key="$tls_dir/server.key"
+server_cert="$tls_dir/server.crt"
+
+if [ -e "$ca_key" ] || [ -e "$ca_cert" ]; then
+  if [ ! -f "$ca_key" ] || [ ! -f "$ca_cert" ]; then
+    printf 'incomplete local CA in %s; refusing to replace it\n' "$tls_dir" >&2
+    exit 1
+  fi
+else
+  openssl req -x509 -newkey rsa:3072 -nodes -sha256 -days 3650 \
+    -subj '/CN=BIG.BROTHER local CA' \
+    -keyout "$ca_key" -out "$ca_cert"
+  chmod 600 "$ca_key"
+fi
+
+if [ -e "$server_key" ] || [ -e "$server_cert" ]; then
+  if [ "$replace_server_cert" -ne 1 ]; then
+    printf 'server certificate already exists; use --replace-server-cert to reissue it with the existing CA\n' >&2
+    exit 1
+  fi
+fi
+
+work_dir=$(mktemp -d "$tls_dir/.setup.XXXXXX")
+trap 'rm -rf "$work_dir"' EXIT HUP INT TERM
+extensions="$work_dir/server-ext.cnf"
+
+{
+  printf '%s\n' '[server]' 'basicConstraints=critical,CA:FALSE' 'keyUsage=critical,digitalSignature,keyEncipherment' 'extendedKeyUsage=serverAuth' 'subjectAltName=@alt_names' '[alt_names]'
+  dns_index=1
+  old_ifs=$IFS
+  IFS=,
+  for host in $hosts; do
+    case "$host" in *[!A-Za-z0-9.-]*) printf 'invalid hostname: %s\n' "$host" >&2; exit 2 ;; esac
+    printf 'DNS.%s = %s\n' "$dns_index" "$host"
+    dns_index=$((dns_index + 1))
+  done
+  ip_index=1
+  for ip in $ips; do
+    case "$ip" in *[!0-9A-Fa-f:.]*) printf 'invalid IP address: %s\n' "$ip" >&2; exit 2 ;; esac
+    printf 'IP.%s = %s\n' "$ip_index" "$ip"
+    ip_index=$((ip_index + 1))
+  done
+  IFS=$old_ifs
+} > "$extensions"
+
+common_name=${hosts%%,*}
+if [ -z "$common_name" ]; then
+  common_name=${ips%%,*}
+fi
+openssl req -new -newkey rsa:2048 -nodes -sha256 \
+  -subj "/CN=$common_name" \
+  -keyout "$work_dir/server.key" -out "$work_dir/server.csr"
+openssl x509 -req -in "$work_dir/server.csr" -CA "$ca_cert" -CAkey "$ca_key" \
+  -CAcreateserial -out "$work_dir/server.crt" -days 397 -sha256 \
+  -extfile "$extensions" -extensions server
+openssl verify -CAfile "$ca_cert" "$work_dir/server.crt"
+chmod 600 "$work_dir/server.key"
+mv "$work_dir/server.key" "$server_key"
+mv "$work_dir/server.crt" "$server_cert"
+
+printf 'Created certificate files in %s\n' "$tls_dir"
+printf '%s\n' 'Trust ca.crt on each client device as a separate manual step.'

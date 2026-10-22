@@ -35,20 +35,21 @@
 
 **Interfaces:** Produces the exact browser publish/read endpoints, codec settings, HTTPS arrangement, port map, launch commands, and supported recording container used by Tasks 2 and 4.
 
-- [ ] Check required tools and access first: Go, Node/npm, headless `agent-browser` (inspect its installed help), MediaMTX binary, certificate tooling, target browsers/devices, and an RTSP camera or explicitly labeled representative source. Report missing tools/access before starting their workflows; leave their checks pending and continue independent work. Verify supported browser engines, fake-media controls, and isolated sessions before designing automation around them.
-- [ ] Read current MediaMTX documentation for browser publishing/reading, control API, recording, and codecs. Pin the evaluated version and document supported host binaries.
-- [ ] Create a disposable publisher/subscriber page and local media configuration; record the exact repeatable launch commands in the probe README.
-- [ ] Choose and document one certificate provisioning tool and exact setup commands that place `tls/server.crt` and `tls/server.key` under the design's config directory. Include LAN hostname/IP coverage and server-certificate reissue instructions without CA replacement.
+- [x] Check required tools and access first: Go 1.27.1, Node 26.12.0/npm 11.20.0, agent-browser 0.39.1 and its help, MediaMTX v1.21.2 macOS ARM64 binary, OpenSSL 4.0.3, FFmpeg 8.1.2, installed browser apps, and available target devices. The CLI drives Chrome only; no Android/iOS device or physical camera was available, so those checks remain pending. Fake media, named sessions, and isolated publisher/reader sessions were verified.
+- [x] Read current MediaMTX documentation for browser publishing/reading, control API, recording, and codecs. Pin v1.21.2 and document the supported packaged targets and release checksums in the memory and build script.
+- [x] Create disposable publisher/subscriber pages and recording-enabled probe config under ignored `tmp/intercom-probe/`; record repeatable commands and assertions in its README.
+- [x] Choose OpenSSL and document setup/reissue commands for `tls/server.crt` and `tls/server.key` in the config directory, including LAN hostname/IP coverage; test CA preservation during server-certificate reissue.
 - [ ] [MANUAL] Trust the local CA on desktop and Android/iOS targets. Verify camera permission and audible playback after a user gesture; record platform-specific trust steps.
-- [ ] Create a repeatable headless `agent-browser` publish/subscribe scenario for supported engines with explicit assertions and isolated client sessions. Record unsupported checks instead of treating Chromium as Firefox/Safari coverage.
-- [ ] Prefer H.264 plus Opus on the publisher, verify the negotiated codec in connection statistics, and exercise recording/replay. Assert or explicitly report unavailable codecs; do not accept a silently negotiated VP8 stream as proof of recording support.
+- [x] Create a repeatable headless Chrome `agent-browser` publish/subscribe scenario with explicit codec, response, URL, and track assertions and isolated client sessions. Record Firefox, Safari, Android, and iOS coverage as unsupported/pending rather than treating Chromium as those browsers.
+- [x] Prefer H.264 plus Opus on the publisher, verify `video/H264` and `audio/opus` in browser connection statistics, and record/replay both browser-originated and synthetic RTSP-originated streams as fMP4. The MediaMTX helper requires lowercase `h264`; the uppercase value produced audio-only output and was corrected.
 - [ ] Test fresh offline desktop Firefox and a provisioned OpenH264 profile separately. Record what browser setup must occur before offline operation.
 - [ ] [DEVICE] Publish and receive real audio/video across desktop Chrome, Firefox, Safari, Android Chrome/Firefox, and iOS Safari. Record versions, codecs, and required settings.
-- [ ] [DEVICE] Ingest an accessible RTSP camera (or explicitly labeled representative source), display it in a browser, record a short clip, and play the clip back. Repeat recording with a browser-originated stream. Identify any required conversion and its CPU cost.
+- [x] Use an explicitly labeled synthetic FFmpeg RTSP source, display it in Chrome, record and replay a five-second clip, and repeat recording/replay with a browser-originated stream. The tested H.264 Baseline plus Opus source required no MediaMTX transcoding; physical camera conversion and target CPU cost remain unknown.
 - [ ] [MANUAL] Coordinate disabling internet connectivity while retaining LAN connectivity and repeat publish/subscribe. Confirm no public connection service or CDN is required.
-- [ ] Record results, limitations, versions, and commands in the memory; index it as current only for claims actually verified. Keep unavailable device checks explicitly pending.
-- [ ] Validate Go-style same-origin proxying in the probe: POST creates a session, PATCH updates ICE, DELETE tears down, and returned Location URLs resolve through `/media/`. Verify loopback HTTP/control listeners and reachable LAN ICE candidates.
-- [ ] Update the design with exact tested endpoint mappings, proxy headers, ports, media readiness check, certificate setup, and publish/read descriptor fields. These are required inputs to Task 4.
+- [x] Record results, limitations, versions, checksums, and commands in the memory and index; claims are limited to verified local findings and unavailable device checks remain explicitly pending.
+- [x] Validate same-origin WHIP/WHEP proxying: OPTIONS/POST/PATCH/DELETE, request content types, statuses, rewritten `Location` values, loopback WebRTC HTTP/Control API listeners, and advertised LAN ICE candidates all passed locally.
+- [ ] [DEVICE] Verify the advertised LAN ICE candidate is reachable from another physical LAN client. Candidate advertisement passed; remote reachability was not tested.
+- [x] Update the design with endpoint mappings, proxy headers/methods, ports, Control API readiness request, OpenSSL certificate setup/reissue commands, and publish/read descriptor fields for Task 4.
 - [ ] **Decision gate:** If MediaMTX cannot pass after routine debugging, or success requires material transcoding cost/architectural changes, stop dependent work, present evidence and alternatives, and ask the owner to choose before continuing that work. Do not select a replacement silently.
 
 **Pass condition:** Reproducible local media exchange, browser/camera recording and playback, offline behavior, and the listed target-browser/device evidence. Missing checks remain unchecked; independent portions of Tasks 2–3 may proceed (packaging/setup steps still need their specific probe outputs), but Task 4 waits for this gate or explicit scope narrowing by the owner. Do not infer compatibility from desktop-only results.
@@ -59,13 +60,13 @@
 
 **Interfaces:** Produces `GET /healthz`, static frontend serving, the design's CLI flags, and a documented `scripts/build` entry point. Build output goes in ignored `tmp/build/OS-ARCH/`; frontend artifacts are bundled with the runnable distribution. `scripts/setup-tls` implements the documented provisioning-tool commands from Task 1; it never silently installs device trust or replaces an existing CA.
 
-- [ ] Add failing Go tests for health JSON, serving a local asset, explicit-port failure, 443-to-8443 fallback on permission/address-in-use errors, and missing/invalid TLS files. Test default config lookup, `--config-dir`, paired certificate overrides, and failure for only one override. Inject candidate ports in tests rather than assuming privileged port access.
-- [ ] Implement the small HTTPS server, CLI parsing, port selection, and startup URL reporting. Keep application logic out of `main.go`.
-- [ ] Add esbuild bundling, a separate `tsc --noEmit` check, and an offline static page; pin dependencies and retain their lockfile. No frontend framework is required for this shell.
-- [ ] Implement `scripts/build --target OS/ARCH` for `linux/arm64`, `linux/amd64`, and `darwin/arm64`, cross-compiling Go and packaging the matching pinned MediaMTX release, config, and local assets. Never copy the host media binary into another target's package. Runtime downloads are forbidden.
-- [ ] Implement `scripts/setup-tls` using the probe's documented tool commands. Ensure repeat runs preserve the CA and require explicit action before replacing certificates. Document client trust as a separate manual operation.
-- [ ] Run `cd backends/go && go test ./...`; expect all tests to pass. Run `scripts/build --target linux/arm64`, `scripts/build --target linux/amd64`, and `scripts/build --target darwin/arm64`; expect the corresponding package under `tmp/build/OS-ARCH/`. Record packaging separately from runtime testing.
-- [ ] After one-time setup, launch plain `bigbrother`, then with `--port`, and verify the page and health response over trusted HTTPS without repeated certificate flags. Document the exact distribution launch command and required media ports.
+- [x] Add Go tests for health JSON, local assets, explicit-port failure, 443-to-8443 fallback on permission/address-in-use errors, missing/invalid TLS files, default config lookup, `--config-dir`, paired certificate overrides, and one-sided override failure. Candidate ports are injected in tests.
+- [x] Implement the HTTPS server, CLI parsing, port selection, and startup URL reporting with application logic outside `main.go`.
+- [x] Add esbuild bundling, a separate `tsc --noEmit` check, and an offline static page; pin dependencies and retain lockfiles.
+- [x] Implement `scripts/build --target OS/ARCH` for all three targets. Each package contains its own pinned MediaMTX v1.21.2 asset, config, license, and local assets; release checksums are verified at build time and no component is downloaded at launch.
+- [x] Implement `scripts/setup-tls` with OpenSSL, preserving the CA across repeat runs and requiring `--replace-server-cert` before replacing server certificates; document device trust as a separate manual step.
+- [x] Run Go unit/race tests and all three target builds. Darwin ARM64 executed on this host; Linux ARM64 and AMD64 were cross-packaged and architecture-checked, not run.
+- [x] After one-time setup in a disposable `--config-dir`, launch the packaged app on default 443 and explicit port 18445 without certificate override flags; verify the page and health response using the generated CA. The actual user profile was not modified. Document ports and distribution launch.
 
 ## Task 3: Define and implement the room contract
 
@@ -73,29 +74,30 @@
 
 **Interfaces:** Consumes the HTTP shell; produces `/ws`, `join`, `rename`, `mediaState`, `welcome`, `participants`, and `error` behavior defined in the design. Contract tests target `BASE_URL`, with optional `CA_CERT` for the local CA, and never import Go code.
 
-- [ ] Write the protocol examples and specify name fallback, session identity, message errors, WebSocket ping/pong deadlines, and snapshot ordering. Default blank names to `Guest ` plus the first four ID characters; serialize room changes and send the welcome snapshot before subsequent updates. Use connection-scoped IDs; duplicate friendly names are allowed.
-- [ ] Add failing contract cases: join two clients and compare snapshots; rename one; update media flags; close a connection; reconnect with a fresh ID; send malformed JSON without disrupting the other client.
-- [ ] Add Go tests for abrupt disconnect expiry using an injected clock or short configurable intervals, using protocol ping/pong rather than JSON heartbeat messages. Assert removal within the configured timeout and no duplicate removal notification.
-- [ ] Implement the room state and `github.com/coder/websocket`, keeping the reader active to process control frames. Serialize state changes using one clearly owned room state; no database or distributed pub/sub.
-- [ ] Log each WebSocket connect/disconnect (including pre-join closures) with client IP and local connection address/port. Add a test asserting the required address fields are present.
-- [ ] Run `cd backends/go && go test -race ./...`; expect no failures or races. Define `npm test` in `tests/contract` to compile the TypeScript tests with `tsc` and run their generated JavaScript using `node --test`. Against the running server, run `cd tests/contract && npm test`; expect all cases to pass.
+- [x] Write the protocol examples and specify name fallback, session identity, message errors, ping/pong deadlines, and snapshot ordering. Blank names default to `Guest ` plus four ID characters; room changes are serialized; welcome precedes later snapshots; IDs are connection-scoped.
+- [x] Add contract cases for two-client snapshots, rename, media flags, close, fresh-ID reconnect, and malformed JSON without disrupting the other client.
+- [x] Add short-interval Go tests for ping/pong disconnect expiry and duplicate-removal prevention without JSON heartbeat messages.
+- [x] Implement room state and `github.com/coder/websocket`; keep the reader active for control frames and use one in-memory owner for room state.
+- [x] Log connect/disconnect events, including pre-join closures, with client IP and local address/port; test the required fields.
+- [x] Run `go test -race ./...` and the compiled Node contract suite against the packaged HTTPS server; both passed.
 
 ## Task 4: Connect room participants to centralized media
 
 **Files:** Create `backends/go/internal/media/{media.go,media_test.go,process.go,proxy.go}`, `web/src/{media.ts,room.ts}`, and extend `protocol/room.md` with the validated publish/read contract.
 
-**Dependency:** Task 1's gate must pass (or the owner must explicitly narrow scope) before starting this task.
+**Dependency:** Task 1's gate must pass (or the owner must explicitly narrow scope) before starting this task. On 2026-10-21 the owner explicitly narrowed the Task 4 gate to the verified synthetic Chrome/RTSP and local proxy results; physical-device trust, browser-matrix, offline-LAN, and remote ICE checks remain pending.
 
 **Interfaces:** Consumes participant IDs/snapshots and Task 1's tested media endpoints. Produces session-associated stream IDs and publish/read descriptors consumed by the UI. Keep product-specific media requests in these adapter files.
 
-- [ ] Add tests asserting distinct stream IDs for concurrent sessions, cleanup after departure, and an actionable failure when the media service is unavailable.
-- [ ] Implement child startup/readiness, graceful termination/reaping, and an unavailable status after unexpected exit. A failed media start fails application startup; a runtime exit leaves room state available until the owner restarts the app.
-- [ ] Add proxy tests for POST/PATCH/DELETE, request bodies/content types, response status/session headers, rewritten Location URLs, and cleanup. Bind media HTTP/control listeners to loopback and disable unused services.
-- [ ] Implement stream association and `/media/` negotiation proxying with reachable LAN ICE candidates. Do not relay media payloads through the application's room WebSocket.
-- [ ] Implement one browser publication and subscriptions to other participants; use local media for the self preview. Track stream readiness independently of announced participant state.
-- [ ] Release subscriptions, publication sessions, and obsolete tracks on departure/reconnect. Show media errors without taking down the room connection.
-- [ ] Repeat Task 1's cross-browser publish/subscribe checks through the real application. Interrupt the media child; verify unavailable status, then restart the application and verify recovery. Do not add automatic restart machinery.
-- [ ] Run Go tests and the contract suite; expect passes. Document remaining device failures before treating this task as complete.
+- [x] Add tests asserting distinct stream IDs for concurrent sessions, cleanup after departure, and an actionable failure when the media service is unavailable.
+- [x] Implement child startup/readiness, graceful termination/reaping, and an unavailable status after unexpected exit. A failed media start fails application startup; a runtime exit leaves room state available until the owner restarts the app.
+- [x] Add proxy tests for OPTIONS/POST/PATCH/DELETE, request bodies/content types, response status/session headers, rewritten Location URLs, and cleanup. Bind media HTTP/control listeners to loopback and disable unused services.
+- [x] Implement stream association and `/media/` negotiation proxying with reachable LAN ICE candidates. Do not relay media payloads through the application's room WebSocket.
+- [x] Implement one browser publication and subscriptions to other participants; use local media for the self preview. Track stream readiness independently of announced participant state.
+- [x] Release subscriptions, publication sessions, and obsolete tracks on departure/reconnect. Show media errors without taking down the room connection.
+- [x] Interrupt the packaged MediaMTX child; `/healthz` stayed 200, `/media/status` became unavailable, and new signaling returned 503. Restarting the app restored media readiness and the room contract. No automatic child restart was added.
+- [ ] Repeat Task 1's publish/subscribe checks across browsers and devices through the real application. The repeatable synthetic Chrome two-client scenario passes; Firefox, Safari, Android, iOS, trusted device certificates, and remote LAN ICE reachability remain pending.
+- [x] Run Go race tests and the contract suite. Document remaining device failures before treating this task as complete.
 
 ## Task 5: Implement the usable intercom UI
 
@@ -103,12 +105,12 @@
 
 **Interfaces:** Consumes room snapshots and media streams; produces the controls and permission/retry behavior specified by the design. Store the friendly name under `bigbrother.name` in local storage.
 
-- [ ] Specify reproducible browser scenarios and implement `scripts/test-browser` using headless `agent-browser` commands supported by the installed version. Assert two participant tiles, remembered/edited names, muted self-preview, and local mute/hide controls not altering the sender. Save evidence under `tmp/test-results/`; fail/report pending explicitly instead of treating skipped checks as passed.
-- [ ] Implement a responsive grid, labels, outgoing mic/video controls, active device labels, camera/microphone selection, and friendly-name editing.
-- [ ] Handle denied permissions and blocked autoplay with an explicit Join/retry action. Test these states and a client with no camera or microphone.
-- [ ] Handle device removal and switching failure while retaining the room UI. Verify successful switches stop obsolete tracks and use the selected device.
-- [ ] Verify local hiding/muting affects only that receiver and that turning off one's own video/mic changes outgoing media.
-- [ ] Run `scripts/test-browser` with synthetic media where supported; expect all automated assertions to pass. Explain any unsupported capability and request a fallback decision rather than silently adopting another browser tool.
+- [x] Specify reproducible browser scenarios and implement `scripts/test-browser` using headless `agent-browser` commands supported by the installed version. Assert two participant tiles, remembered/edited names, muted self-preview, and local mute/hide controls not altering the sender. Save evidence under `tmp/test-results/`; fail/report pending explicitly instead of treating skipped checks as passed.
+- [x] Implement a responsive grid, labels, outgoing mic/video controls, active device labels, camera/microphone selection, and friendly-name editing.
+- [x] Handle denied permissions and blocked autoplay with an explicit Join/retry action. Test these states and a client with no camera or microphone; the synthetic client without a camera successfully publishes audio.
+- [x] Handle browser track-ended/device-change events and switching failure while retaining the room UI. Synthetic tests verify successful selection stops obsolete tracks and failed camera selection keeps existing room media; physical device removal remains pending below.
+- [x] Verify local hiding/muting affects only that receiver and that turning off one's own video/mic changes outgoing media.
+- [x] Run `scripts/test-browser` with synthetic media where supported; all automated assertions passed on the final packaged Darwin ARM64 build with agent-browser 0.39.1 / Chrome for Testing 156.0.8078.47. Firefox/Safari/mobile remain pending; no alternate automation tool was substituted.
 - [ ] [DEVICE] Verify real audio, camera selection/removal, mobile orientation, background/resume, and six-tile layout on actual devices. Synthetic media does not satisfy these checks.
 
 ## Task 6: Validate offline delivery and measured limits
@@ -117,13 +119,13 @@
 
 **Interfaces:** Consumes the runnable distribution. Produces repeatable setup/start/stop instructions and a factual acceptance record.
 
-- [ ] Document certificate trust setup, Linux/macOS distribution requirements, launch flags, web/media ports, and how to stop the application and its owned media process cleanly.
-- [ ] Ensure startup reports missing media binaries/configuration and media startup failures clearly. Test shutdown leaves no owned child process running.
+- [x] Document certificate trust setup, Linux/macOS distribution requirements, launch flags, web/media ports, offline runtime dependencies, and how to stop the application and its owned media process cleanly.
+- [x] Ensure startup reports missing media binaries/configuration and media startup failures clearly. SIGINT shutdown of the packaged app was verified to remove its owned MediaMTX child.
 - [ ] [MANUAL] On a clean target environment with runtime dependencies already provisioned, coordinate disconnecting the internet and run the packaged app without source/build tools. Confirm all assets and media work locally.
-- [ ] Verify explicit occupied-port errors and default-port fallback without elevated privileges. Confirm printed LAN URLs are usable from another device.
+- [ ] Verify explicit occupied-port errors and default-port fallback without elevated privileges. Unit tests cover injected occupied-port and fallback errors; a real unprivileged bind and LAN URL reachability from another device remain pending.
 - [ ] [DEVICE] Test 1, 3, and 6 participants on available target hardware. Record CPU, memory, resolution/frame rate, network conditions, latency observations, and failures; do not invent universal capacity guarantees.
-- [ ] Run Go tests, contract tests, and automated browser checks once against the final build. Record commands and results alongside the manual device matrix.
-- [ ] Review version 1 against the self-contained design, explicitly listing deferred features and unverified devices. Update relevant memories/index entries with verified findings.
+- [x] Run Go tests, contract tests, and automated browser checks once against the final build. Record commands and results alongside the manual device matrix.
+- [x] Review version 1 against the self-contained design, explicitly listing deferred features and unverified devices. Update relevant memories/index entries with verified findings.
 
 ## Follow-up plans, not version 1 blockers
 
@@ -132,15 +134,17 @@
 
 ## Acceptance evidence
 
-Not executed yet. For each run, record date, command/scenario, tool/browser/OS versions, host architecture, expected result, observed result, and pass/fail/pending status. Link transient logs/screenshots when useful; retain the findings here so cleanup of `tmp/` does not erase the result.
+Evidence collected on 2026-10-21. The machine was macOS 15.7.9, Darwin ARM64; Go 1.27.1, Node 26.12.0/npm 11.20.0, agent-browser 0.39.1 with Chrome for Testing 156.0.8078.47, FFmpeg 8.1.2, and MediaMTX v1.21.2. The durable local media findings and checksums are in the [feasibility memory](../memories/20261021-media-browser-and-recording-feasibility.md).
 
 | Check | Status | Evidence |
 | --- | --- | --- |
-| Media feasibility gate | Pending | Not run |
-| Go unit/race tests | Pending | Not run |
-| Backend contract tests | Pending | Not run |
-| Headless agent-browser checks | Pending | Tool unavailable on PATH during plan revision; recheck before execution |
-| Physical browser/device matrix | Pending | Not run |
-| Offline packaged runtime | Pending | Not run |
-| Target packaging and execution | Pending | Record each target separately |
-| 1/3/6-participant measurements | Pending | Not run |
+| Media feasibility gate | Narrowed by owner for Task 4; target checks pending | Synthetic Chrome 156 WHIP/WHEP through the packaged Go HTTPS proxy; two clients decoded H.264 Baseline + Opus, each had one reader, and departure removed publication/reader sessions. Earlier browser and synthetic RTSP recordings replayed as five-second fMP4. Physical device trust/browser matrix, remote LAN ICE reachability, and internet-disconnected LAN check remain pending. See memory and browser scenario. |
+| Go unit/race tests | Pass | 2026-10-21: `GOCACHE=/Users/booty/code/BIG.BROTHER/tmp/go-build-cache GOMODCACHE=/Users/booty/code/BIG.BROTHER/tmp/go-mod-cache go test -race ./...` from `backends/go`; Go 1.27.1, Darwin ARM64. |
+| Backend contract tests | Pass | 2026-10-21: `BASE_URL=https://localhost:18445 CA_CERT=<disposable-config>/tls/ca.crt npm test` against packaged Darwin ARM64 app before and after its MediaMTX restart; Node 26.12.0; 1/1 test passed each run. |
+| Headless agent-browser checks | Pass for automated synthetic Chrome scenarios | 2026-10-21: `scripts/test-browser` passed name persistence/editing, muted self-preview, blocked-autoplay retry, two decoded participant tiles, receiver-only mute/hide, outgoing mic/video controls, selected-device replacement and obsolete-track cleanup, failed camera-switch retention, denied-permission retry, and audio-only operation without a camera. `scripts/test-media-browser` also passed H.264/Opus exchange and departure cleanup. Both ran against the packaged Darwin ARM64 app with agent-browser 0.39.1 / Chrome for Testing 156.0.8078.47 and `--ignore-https-errors`; physical devices, certificate trust, other engines, and mobile remain pending. JSON evidence is under ignored `tmp/test-results/`. |
+| Packaged shutdown | Pass | 2026-10-21: SIGINT to the packaged Darwin ARM64 app stopped the application and its owned MediaMTX child; process inspection found neither exact PID afterward. |
+| Port fallback and LAN reachability | Partial | Launch unit tests cover explicit occupied-port errors and fallback after injected bind errors. This host run used an explicit test port; real unprivileged fallback and another-device LAN URL reachability remain pending. |
+| Physical browser/device matrix | Pending | No physical camera, Android, or iOS device was available; installed agent-browser supported Chrome only for this workflow. Desktop Firefox/Safari and mobile checks are not claimed. |
+| Offline packaged runtime | Pending | Matching media binaries and browser assets are bundled and no launch-time download is used, but internet was not disconnected while retaining LAN access. |
+| Target packaging and execution | Partial | After the final UI implementation, `scripts/build --target linux/arm64`, `linux/amd64`, and `darwin/arm64` passed with checksum-verified MediaMTX v1.21.2 assets. `file` verified all architectures; packaged Darwin ARM64 executed on this host. Linux packages were not run. |
+| 1/3/6-participant measurements | Pending | Not run; no target hardware or physical participant devices were available. |

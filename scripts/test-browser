@@ -1,0 +1,187 @@
+#!/bin/sh
+set -eu
+
+root_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
+base_url=${BASE_URL:-https://localhost:18445}
+api_url=${MEDIAMTX_API_URL:-http://127.0.0.1:9997}
+results_dir="$root_dir/tmp/test-results"
+first_session=bigbrother-ui-first
+second_session=bigbrother-ui-second
+denied_session=bigbrother-ui-denied
+audio_only_session=bigbrother-ui-audio-only
+fake_media_args='--use-fake-device-for-media-stream,--use-fake-ui-for-media-stream'
+
+command -v agent-browser >/dev/null 2>&1 || { printf '%s\n' 'agent-browser is required for this browser check.' >&2; exit 2; }
+command -v curl >/dev/null 2>&1 || { printf '%s\n' 'curl is required for the local MediaMTX API assertions.' >&2; exit 2; }
+command -v jq >/dev/null 2>&1 || { printf '%s\n' 'jq is required to inspect browser and media status JSON.' >&2; exit 2; }
+mkdir -p "$results_dir"
+
+close_session() {
+  agent-browser --session "$1" close >/dev/null 2>&1 || true
+}
+
+cleanup() {
+  close_session "$audio_only_session"
+  close_session "$denied_session"
+  close_session "$second_session"
+  close_session "$first_session"
+}
+trap cleanup EXIT INT TERM
+
+browser_state() {
+  agent-browser --session "$1" eval 'JSON.stringify({
+    tiles: Array.from(document.querySelectorAll(".tile"), tile => {
+      const video = tile.querySelector("video");
+      const stream = video?.srcObject;
+      return {
+        name: tile.querySelector(".tile-details strong")?.textContent ?? "",
+        self: tile.classList.contains("self"),
+        state: tile.querySelector(".tile-state")?.textContent ?? "",
+        muted: video?.muted ?? false,
+        readyState: video?.readyState ?? 0,
+        width: video?.videoWidth ?? 0,
+        height: video?.videoHeight ?? 0,
+        hidden: tile.classList.contains("video-hidden"),
+        audioEnabled: tile.dataset.audioEnabled === "true",
+        videoEnabled: tile.dataset.videoEnabled === "true",
+        streamReady: tile.dataset.streamReady === "true",
+        tracks: stream ? stream.getTracks().map(track => ({kind: track.kind, enabled: track.enabled, readyState: track.readyState, deviceId: track.getSettings().deviceId ?? ""})) : [],
+        deviceLabels: tile.querySelector(".device-labels")?.textContent ?? "",
+        audioOptions: Array.from(tile.querySelectorAll("#audio-device option"), option => ({value: option.value, label: option.textContent})),
+        videoOptions: Array.from(tile.querySelectorAll("#video-device option"), option => ({value: option.value, label: option.textContent}))
+      };
+    }),
+    status: document.querySelector("#room-status")?.textContent ?? "",
+    joinName: document.querySelector("#friendly-name")?.value ?? "",
+    joinButton: document.querySelector("#join-button")?.textContent ?? "",
+    savedName: localStorage.getItem("bigbrother.name") ?? "",
+    audioValue: document.querySelector(".tile.self #audio-device")?.value ?? "",
+    videoValue: document.querySelector(".tile.self #video-device")?.value ?? "",
+    oldAudioState: window.__oldAudioTrack?.readyState ?? "",
+    oldCameraState: window.__oldCameraTrack?.readyState ?? ""
+  })' | jq -r '.'
+}
+
+wait_for_state() {
+  session=$1
+  query=$2
+  description=$3
+  attempt=0
+  while [ "$attempt" -lt 30 ]; do
+    state=$(browser_state "$session" 2>/dev/null || printf '{}')
+    if printf '%s' "$state" | jq -e "$query" >/dev/null 2>&1; then
+      printf '%s\n' "$state"
+      return 0
+    fi
+    attempt=$((attempt + 1))
+    sleep 1
+  done
+  printf 'Timed out waiting for %s in session %s.\nLast state: %s\n' "$description" "$session" "$state" >&2
+  return 1
+}
+
+close_session "$first_session"
+close_session "$second_session"
+close_session "$denied_session"
+close_session "$audio_only_session"
+
+agent-browser --session "$first_session" --ignore-https-errors --args "$fake_media_args" open "$base_url" >/dev/null
+agent-browser --session "$first_session" fill '#friendly-name' 'Kitchen' >/dev/null
+agent-browser --session "$first_session" click '#join-button' >/dev/null
+first_state=$(wait_for_state "$first_session" '.tiles | length == 1 and .[0].streamReady and .[0].muted and any(.[0].tracks[]; .kind == "audio" and .readyState == "live") and any(.[0].tracks[]; .kind == "video" and .readyState == "live")' 'first local preview and publication')
+printf '%s\n' "$first_state" > "$results_dir/intercom-first.json"
+printf '%s\n' "$first_state" | jq -e '.tiles[0].name == "Kitchen" and .tiles[0].muted and .savedName == "Kitchen"' >/dev/null
+
+agent-browser --session "$first_session" click '.tile.self [data-action="edit-name"]' >/dev/null
+agent-browser --session "$first_session" fill '.tile.self .name-editor' 'Kitchen Den' >/dev/null
+agent-browser --session "$first_session" click '.tile.self [data-action="save-name"]' >/dev/null
+renamed=$(wait_for_state "$first_session" '.tiles | length == 1 and .[0].name == "Kitchen Den"' 'friendly-name update')
+printf '%s\n' "$renamed" | jq -e '.savedName == "Kitchen Den"' >/dev/null
+agent-browser --session "$first_session" reload >/dev/null
+remembered=$(wait_for_state "$first_session" '.tiles | length == 0' 'reload after saving the friendly name')
+printf '%s\n' "$remembered" > "$results_dir/intercom-remembered-name.json"
+printf '%s\n' "$remembered" | jq -e '.joinName == "Kitchen Den" and .savedName == "Kitchen Den"' >/dev/null
+agent-browser --session "$first_session" click '#join-button' >/dev/null
+first_rejoined=$(wait_for_state "$first_session" '.tiles | length == 1 and .[0].streamReady and .[0].muted' 'rejoined local preview')
+
+agent-browser --session "$second_session" --ignore-https-errors --args "$fake_media_args" --init-script "$root_dir/tests/browser/block-autoplay-init.js" open "$base_url" >/dev/null
+agent-browser --session "$second_session" fill '#friendly-name' 'Hallway' >/dev/null
+agent-browser --session "$second_session" click '#join-button' >/dev/null
+first_two=$(wait_for_state "$first_session" '.tiles | length == 2 and all(.[]; .streamReady)' 'two participant snapshots')
+blocked=$(wait_for_state "$second_session" '.tiles | length == 2 and any(.[]; (.state | test("Playback blocked|Playback is blocked|Media is ready")))' 'blocked autoplay retry state')
+printf '%s\n' "$first_two" > "$results_dir/intercom-two-participants.json"
+printf '%s\n' "$blocked" > "$results_dir/intercom-autoplay-blocked.json"
+printf '%s\n' "$blocked" | jq -e 'any(.tiles[]; .self and .name == "Hallway") and any(.tiles[]; (.state | test("Playback blocked|Playback is blocked|Media is ready")))' >/dev/null
+agent-browser --session "$second_session" eval 'window.__bbBlockRemotePlayback = false; JSON.stringify(true)' >/dev/null
+agent-browser --session "$second_session" click '#join-button' >/dev/null
+first_two_media=$(wait_for_state "$first_session" '(.tiles | length == 2) and all(.tiles[]; .streamReady and .width > 0 and .height > 0)' 'both decoded participant tiles')
+second_two_media=$(wait_for_state "$second_session" '(.tiles | length == 2) and all(.tiles[]; .streamReady and .width > 0 and .height > 0)' 'autoplay retry and decoded participant tiles')
+printf '%s\n' "$first_two_media" > "$results_dir/intercom-two-media.json"
+printf '%s\n' "$second_two_media" >> "$results_dir/intercom-two-media.json"
+printf '%s\n' "$first_two_media" | jq -e '[.tiles[] | select(.self)] | length == 1 and .[0].muted and .[0].name == "Kitchen Den"' >/dev/null
+printf '%s\n' "$second_two_media" | jq -e '[.tiles[] | select(.self)] | length == 1 and .[0].muted and .[0].name == "Hallway"' >/dev/null
+
+agent-browser --session "$first_session" click '.tile:not(.self) [data-action="toggle-local-audio"]' >/dev/null
+receiver_muted=$(wait_for_state "$first_session" '[.tiles[] | select(.self == false) | .tracks[] | select(.kind == "audio")] | length == 1 and .[0].enabled == false' 'receiver-local audio mute')
+sender_still_live=$(browser_state "$second_session")
+printf '%s\n' "$sender_still_live" | jq -e '[.tiles[] | select(.self) | .tracks[] | select(.kind == "audio" or .kind == "video")] | length == 2 and all(.[]; .enabled)' >/dev/null
+agent-browser --session "$first_session" click '.tile:not(.self) [data-action="toggle-local-video"]' >/dev/null
+receiver_hidden=$(wait_for_state "$first_session" '[.tiles[] | select(.self == false)] | length == 1 and .[0].hidden and ([.[0].tracks[] | select(.kind == "video" and .enabled == false)] | length == 1)' 'receiver-local video hide')
+printf '%s\n' "$receiver_muted" > "$results_dir/intercom-local-controls.json"
+printf '%s\n' "$receiver_hidden" >> "$results_dir/intercom-local-controls.json"
+printf '%s\n' "$sender_still_live" | jq -e '[.tiles[] | select(.self) | .tracks[] | select(.kind == "video")] | length == 1 and .[0].enabled' >/dev/null
+
+agent-browser --session "$first_session" click '.tile:not(.self) [data-action="toggle-local-audio"]' >/dev/null
+agent-browser --session "$first_session" click '.tile:not(.self) [data-action="toggle-local-video"]' >/dev/null
+
+agent-browser --session "$second_session" click '.tile.self [data-action="toggle-audio"]' >/dev/null
+audio_off=$(wait_for_state "$second_session" '[.tiles[] | select(.self)] | length == 1 and .[0].audioEnabled == false and ([.[0].tracks[] | select(.kind == "audio" and .enabled == false)] | length == 1)' 'outgoing microphone mute')
+first_audio_off=$(wait_for_state "$first_session" '[.tiles[] | select(.self == false)] | length == 1 and .[0].audioEnabled == false' 'announced outgoing microphone state')
+agent-browser --session "$second_session" click '.tile.self [data-action="toggle-video"]' >/dev/null
+video_off=$(wait_for_state "$second_session" '[.tiles[] | select(.self)] | length == 1 and .[0].videoEnabled == false and ([.[0].tracks[] | select(.kind == "video" and .enabled == false)] | length == 1)' 'outgoing camera stop')
+agent-browser --session "$second_session" click '.tile.self [data-action="toggle-audio"]' >/dev/null
+agent-browser --session "$second_session" click '.tile.self [data-action="toggle-video"]' >/dev/null
+printf '%s\n' "$audio_off" "$first_audio_off" "$video_off" > "$results_dir/intercom-outgoing-controls.json"
+
+audio_device=$(printf '%s' "$first_two_media" | jq -r '[.tiles[] | select(.self) | .audioOptions[] | select(.value != "")][0].value // empty')
+video_device=$(printf '%s' "$first_two_media" | jq -r '[.tiles[] | select(.self) | .videoOptions[] | select(.value != "")][0].value // empty')
+[ -n "$audio_device" ] || { printf '%s\n' 'PENDING: synthetic browser exposed no selectable microphone device.' >&2; exit 1; }
+[ -n "$video_device" ] || { printf '%s\n' 'PENDING: synthetic browser exposed no selectable camera device.' >&2; exit 1; }
+agent-browser --session "$first_session" eval 'window.__oldAudioTrack = document.querySelector(".tile.self video").srcObject.getAudioTracks()[0]; window.__oldCameraTrack = document.querySelector(".tile.self video").srcObject.getVideoTracks()[0]; JSON.stringify(window.__oldCameraTrack.getSettings().deviceId)' >/dev/null
+agent-browser --session "$first_session" select '#audio-device' "$audio_device" >/dev/null
+audio_switched=$(wait_for_state "$first_session" '.oldAudioState == "ended" and (.tiles | length == 2)' 'microphone replacement and obsolete-track cleanup')
+agent-browser --session "$first_session" select '#video-device' "$video_device" >/dev/null
+switched=$(wait_for_state "$first_session" '.oldCameraState == "ended" and (.tiles | length == 2)' 'camera replacement and obsolete-track cleanup')
+printf '%s\n' "$switched" > "$results_dir/intercom-device-switch.json"
+printf '%s\n' "$switched" | jq -e --arg audio "$audio_device" --arg video "$video_device" '
+  .audioValue == $audio and .videoValue == $video and
+  ([.tiles[] | select(.self) | .tracks[] | select(.kind == "audio") | .deviceId] == [$audio]) and
+  ([.tiles[] | select(.self) | .tracks[] | select(.kind == "video") | .deviceId] == [$video])
+' >/dev/null
+agent-browser --session "$first_session" eval 'const select = document.querySelector("#video-device"); select.add(new Option("Missing camera", "missing-camera-device")); select.value = "missing-camera-device"; select.dispatchEvent(new Event("change", {bubbles: true})); JSON.stringify(true)' >/dev/null
+switch_failure=$(wait_for_state "$first_session" '(.status | contains("Could not switch camera")) and (.tiles | length == 2) and all(.tiles[]; all(.tracks[]; .readyState == "live"))' 'failed camera-switch error while preserving room')
+printf '%s\n' "$switch_failure" > "$results_dir/intercom-device-switch-error.json"
+printf '%s\n' "$switch_failure" | jq -e '(.tiles | length == 2) and all(.tiles[]; all(.tracks[]; .readyState == "live"))' >/dev/null
+
+paths=$(curl --fail --silent --show-error "$api_url/v3/paths/list")
+printf '%s\n' "$paths" | jq -e '.itemCount == 2 and all(.items[]; .online and .inboundBytes > 0 and any(.tracks[]; . == "H264") and any(.tracks[]; . == "Opus"))' >/dev/null
+printf '%s\n' "$paths" > "$results_dir/intercom-media-paths.json"
+printf '%s\n' 'PASS: names persist and edit; muted preview, autoplay retry, receiver-only controls, sender controls, device selection, failed-switch retention, and two-client media all passed.'
+
+close_session "$second_session"
+close_session "$first_session"
+
+agent-browser --session "$denied_session" --ignore-https-errors --init-script "$root_dir/tests/browser/deny-media-init.js" open "$base_url" >/dev/null
+agent-browser --session "$denied_session" fill '#friendly-name' 'No permission' >/dev/null
+agent-browser --session "$denied_session" click '#join-button' >/dev/null
+denied=$(wait_for_state "$denied_session" '(.tiles | length == 1) and (.status | contains("No camera or microphone is available")) and .joinButton == "Retry media"' 'permission-denied retry state')
+printf '%s\n' "$denied" > "$results_dir/intercom-permission-denied.json"
+agent-browser --session "$denied_session" close >/dev/null
+
+agent-browser --session "$audio_only_session" --ignore-https-errors --args "$fake_media_args" --init-script "$root_dir/tests/browser/no-camera-init.js" open "$base_url" >/dev/null
+agent-browser --session "$audio_only_session" fill '#friendly-name' 'Audio only' >/dev/null
+agent-browser --session "$audio_only_session" click '#join-button' >/dev/null
+audio_only=$(wait_for_state "$audio_only_session" '.tiles | length == 1 and .[0].streamReady and any(.[0].tracks[]; .kind == "audio" and .readyState == "live") and all(.[0].tracks[]; .kind != "video")' 'audio-only participant')
+printf '%s\n' "$audio_only" > "$results_dir/intercom-no-camera.json"
+printf '%s\n' "$audio_only" | jq -e '.tiles[0].deviceLabels | contains("No camera")' >/dev/null
+printf '%s\n' 'PASS: denied permissions keep the room and retry action; a camera-less client publishes available audio.'

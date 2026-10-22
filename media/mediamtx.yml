@@ -1,0 +1,36 @@
+logLevel: info
+logDestinations: [stdout]
+
+# The Go HTTPS process is the only browser-facing signaling origin.
+api: true
+apiAddress: 127.0.0.1:9997
+playback: false
+playbackAddress: 127.0.0.1:9996
+
+# Version 1 uses browser WHIP/WHEP. Camera pull support is a follow-up.
+rtsp: false
+rtspAddress: 127.0.0.1:8554
+rtmp: false
+rtmpAddress: 127.0.0.1:1935
+hls: false
+hlsAddress: 127.0.0.1:8888
+srt: false
+srtAddress: 127.0.0.1:8890
+moq: false
+
+webrtc: true
+webrtcAddress: 127.0.0.1:8889
+webrtcEncryption: false
+webrtcAllowOrigins: ["*"]
+webrtcLocalUDPAddress: :8189
+webrtcLocalTCPAddress: ""
+webrtcIPsFromInterfaces: true
+webrtcAdditionalHosts: []
+
+pathDefaults:
+  record: false
+  recordPath: ./recordings/%path/%Y-%m-%d_%H-%M-%S-%f
+  recordFormat: fmp4
+
+paths:
+  all_others: {}

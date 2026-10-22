@@ -1,0 +1,95 @@
+#!/bin/sh
+set -eu
+
+base_url=${BASE_URL:-https://localhost:18445}
+api_url=${MEDIAMTX_API_URL:-http://127.0.0.1:9997}
+first_session=bigbrother-media-first
+second_session=bigbrother-media-second
+fake_media_args='--use-fake-device-for-media-stream,--use-fake-ui-for-media-stream'
+
+command -v agent-browser >/dev/null 2>&1 || { printf '%s\n' 'agent-browser is required for this browser check.' >&2; exit 2; }
+command -v curl >/dev/null 2>&1 || { printf '%s\n' 'curl is required for the local MediaMTX API assertions.' >&2; exit 2; }
+command -v jq >/dev/null 2>&1 || { printf '%s\n' 'jq is required to inspect browser and media status JSON.' >&2; exit 2; }
+
+close_session() {
+  agent-browser --session "$1" close >/dev/null 2>&1 || true
+}
+
+cleanup() {
+  close_session "$second_session"
+  close_session "$first_session"
+}
+trap cleanup EXIT INT TERM
+
+browser_state() {
+  agent-browser --session "$1" eval 'JSON.stringify(Array.from(document.querySelectorAll(".tile video"), v => ({muted: v.muted, readyState: v.readyState, width: v.videoWidth, height: v.videoHeight, tracks: v.srcObject ? v.srcObject.getTracks().map(t => ({kind: t.kind, readyState: t.readyState})) : []})))' | jq -r '.'
+}
+
+wait_for_tiles() {
+  session=$1
+  expected=$2
+  attempt=0
+  while [ "$attempt" -lt 30 ]; do
+    state=$(browser_state "$session" 2>/dev/null || true)
+    if printf '%s' "$state" | jq -e --argjson expected "$expected" '
+      length == $expected and
+      all(.[]; .readyState == 4 and .width > 0 and .height > 0 and
+        any(.tracks[]; .kind == "audio" and .readyState == "live") and
+        any(.tracks[]; .kind == "video" and .readyState == "live"))
+    ' >/dev/null 2>&1; then
+      printf '%s\n' "$state"
+      return 0
+    fi
+    attempt=$((attempt + 1))
+    sleep 1
+  done
+  printf 'Timed out waiting for %s decoded media tile(s) in browser session %s.\nLast state: %s\n' "$expected" "$session" "$state" >&2
+  return 1
+}
+
+wait_for_path_count() {
+  expected=$1
+  attempt=0
+  while [ "$attempt" -lt 20 ]; do
+    paths=$(curl --fail --silent --show-error "$api_url/v3/paths/list" 2>/dev/null || true)
+    if printf '%s' "$paths" | jq -e --argjson expected "$expected" '
+      .itemCount == $expected and
+      all(.items[]; .online == true and .inboundBytes > 0 and
+        any(.tracks[]; . == "H264") and any(.tracks[]; . == "Opus"))
+    ' >/dev/null 2>&1; then
+      printf '%s\n' "$paths"
+      return 0
+    fi
+    attempt=$((attempt + 1))
+    sleep 1
+  done
+  printf 'Timed out waiting for %s active MediaMTX stream(s).\nLast response: %s\n' "$expected" "$paths" >&2
+  return 1
+}
+
+close_session "$first_session"
+close_session "$second_session"
+agent-browser --session "$first_session" --ignore-https-errors --args "$fake_media_args" open "$base_url" >/dev/null
+agent-browser --session "$first_session" fill '#friendly-name' 'Synthetic One' >/dev/null
+agent-browser --session "$first_session" click '#join-button' >/dev/null
+first_one=$(wait_for_tiles "$first_session" 1)
+printf '%s\n' "$first_one" | jq -e 'length == 1 and .[0].muted == true' >/dev/null
+printf '%s\n' 'PASS: first synthetic publisher decoded local audio/video and its self-preview is muted.'
+
+agent-browser --session "$second_session" --ignore-https-errors --args "$fake_media_args" open "$base_url" >/dev/null
+agent-browser --session "$second_session" fill '#friendly-name' 'Synthetic Two' >/dev/null
+agent-browser --session "$second_session" click '#join-button' >/dev/null
+first_two=$(wait_for_tiles "$first_session" 2)
+second_two=$(wait_for_tiles "$second_session" 2)
+printf '%s\n' "$first_two" | jq -e '[.[] | select(.muted == true)] | length == 1' >/dev/null
+printf '%s\n' "$second_two" | jq -e '[.[] | select(.muted == true)] | length == 1' >/dev/null
+paths_two=$(wait_for_path_count 2)
+printf '%s\n' "$paths_two" | jq -e 'all(.items[]; (.readers | length) == 1 and .outboundBytes > 0)' >/dev/null
+printf '%s\n' 'PASS: two synthetic Chrome participants published H.264/Opus and each received the other stream.'
+
+close_session "$second_session"
+paths_one=$(wait_for_path_count 1)
+printf '%s\n' "$paths_one" | jq -e 'all(.items[]; (.readers | length) == 0)' >/dev/null
+first_one_again=$(wait_for_tiles "$first_session" 1)
+printf '%s\n' "$first_one_again" | jq -e '.[0].muted == true' >/dev/null
+printf '%s\n' 'PASS: participant departure removed its publication and the remaining participant reader session.'
