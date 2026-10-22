@@ -36,7 +36,7 @@ done
 
 if [ -z "$config_dir" ]; then
   if [ "$(uname -s)" = "Darwin" ]; then
-    config_base=${XDG_CONFIG_HOME:-"$HOME/Library/Application Support"}
+    config_base="$HOME/Library/Application Support"
   else
     config_base=${XDG_CONFIG_HOME:-"$HOME/.config"}
   fi

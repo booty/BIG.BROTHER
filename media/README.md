@@ -35,3 +35,9 @@ Normal launch reads `tls/server.crt` and `tls/server.key` under the platform's `
 The repeatable local synthetic-media commands and recorded results are in [`docs/memories/20261021-media-browser-and-recording-feasibility.md`](../docs/memories/20261021-media-browser-and-recording-feasibility.md). The checked-in `mediamtx.yml` is validated against v1.21.2; the probe's recording-enabled config and publisher pages are disposable under ignored `tmp/intercom-probe/`.
 
 The repeatable packaged-app browser scenario is [`scripts/test-media-browser`](../scripts/test-media-browser), with its prerequisites and limits in [`tests/browser/media-integration.md`](../tests/browser/media-integration.md). It passed with synthetic media in headless Chrome on this host. Real camera/microphone behavior, trusted CA installation, remote LAN ICE reachability, offline operation, Firefox/Safari, Android, and iOS checks remain pending.
+
+The default configuration directory follows Go's `os.UserConfigDir`: macOS uses
+`~/Library/Application Support/bigbrother` even when `XDG_CONFIG_HOME` is set;
+Linux uses `$XDG_CONFIG_HOME/bigbrother`, falling back to `~/.config/bigbrother`.
+Use `--config-dir` on both setup and launch to choose a different directory.
+Run `sh tests/scripts/setup-tls-paths.sh` to check the setup script's platform defaults.
