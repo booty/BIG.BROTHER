@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -88,6 +89,7 @@ func run() error {
 
 	staticDir := launch.StaticDir(executablePath, workingDir)
 	roomState := room.New(room.Options{
+		Logger:        slog.New(slog.NewTextHandler(os.Stdout, nil)),
 		AssignStream:  mediaManager.AssignStream,
 		ReleaseStream: mediaManager.ReleaseStream,
 	})

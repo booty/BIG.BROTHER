@@ -41,3 +41,16 @@ The default configuration directory follows Go's `os.UserConfigDir`: macOS uses
 Linux uses `$XDG_CONFIG_HOME/bigbrother`, falling back to `~/.config/bigbrother`.
 Use `--config-dir` on both setup and launch to choose a different directory.
 Run `sh tests/scripts/setup-tls-paths.sh` to check the setup script's platform defaults.
+
+Room connect/disconnect events go to stdout, including the client IP and the
+local address/port. Application startup/exit errors are printed to stderr. After building
+and creating a disposable TLS configuration, check the packaged log destinations:
+
+```sh
+NODE_EXTRA_CA_CERTS="$PWD/tmp/intercom-run/config/tls/ca.crt" \
+  node tests/server/logging.cjs tmp/build/darwin-arm64/bigbrother tmp/intercom-run/config
+```
+
+This check uses the contract suite's installed `ws` dependency, starts its own app
+on an available HTTPS port, and stops its media child afterward. The fixed local
+media ports must be free.
