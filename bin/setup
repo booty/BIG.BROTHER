@@ -1,0 +1,38 @@
+#!/bin/sh
+set -eu
+root_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
+case "${1:-}" in
+  --help|-h)
+    printf '%s\n' 'Usage: bin/setup' \
+      'Installs application dependencies and builds for this machine.' \
+      'Creates localhost TLS certificates in tmp/bigbrother-local on first setup.' \
+      'Requires Go 1.22+, Node.js 18+, npm, and OpenSSL for certificate creation.'
+    exit 0
+    ;;
+esac
+[ "$#" -eq 0 ] || { printf '%s\n' 'Usage: bin/setup (no arguments)' >&2; exit 2; }
+if ! command -v go >/dev/null 2>&1; then
+  printf '%s\n' 'Missing prerequisite: go. Install Go 1.22+; see README.md Environment Setup.' >&2
+  exit 1
+fi
+host_os=$(go env GOHOSTOS)
+host_arch=$(go env GOHOSTARCH)
+config_dir="$root_dir/tmp/bigbrother-local"
+needs_tls_setup=0
+if [ ! -f "$config_dir/tls/server.crt" ] || [ ! -f "$config_dir/tls/server.key" ]; then
+  needs_tls_setup=1
+  if ! command -v openssl >/dev/null 2>&1; then
+    printf '%s\n' 'Missing prerequisite: openssl. Install OpenSSL to create localhost TLS certificates.' >&2
+    exit 1
+  fi
+fi
+"$root_dir/scripts/build" --target "$host_os/$host_arch"
+if [ "$needs_tls_setup" -eq 1 ]; then
+  if ! "$root_dir/scripts/setup-tls" --host localhost --ip 127.0.0.1 --ip ::1 \
+      --config-dir "$config_dir" > "$root_dir/tmp/setup-tls.log" 2>&1; then
+    cat "$root_dir/tmp/setup-tls.log" >&2
+    exit 1
+  fi
+  printf 'Created localhost TLS certificates in %s/tls\n' "$config_dir"
+  printf 'Trust %s/tls/ca.crt on your browser/device.\n' "$config_dir"
+fi

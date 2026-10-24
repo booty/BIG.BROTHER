@@ -1,0 +1,8 @@
+#!/bin/sh
+set -eu
+root_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
+"$root_dir/bin/setup"
+host_os=$(go env GOHOSTOS)
+host_arch=$(go env GOHOSTARCH)
+exec "$root_dir/tmp/build/$host_os-$host_arch/bigbrother" \
+  --config-dir "$root_dir/tmp/bigbrother-local" "$@"

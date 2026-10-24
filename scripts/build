@@ -4,8 +4,15 @@ set -eu
 root_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
 target=""
 
+usage() {
+  printf '%s\n' 'Usage: scripts/build --target OS/ARCH' \
+    'Targets: darwin/arm64, linux/arm64, linux/amd64' \
+    'Installs application dependencies and builds only stale or missing stages.'
+}
+
 while [ "$#" -gt 0 ]; do
   case "$1" in
+    --help|-h) usage; exit 0 ;;
     --target)
       [ "$#" -ge 2 ] || { printf '%s\n' "missing value for --target" >&2; exit 2; }
       target=$2
@@ -29,6 +36,31 @@ case "$target" in
     exit 2
     ;;
 esac
+
+for tool in go node npm cksum; do
+  if ! command -v "$tool" >/dev/null 2>&1; then
+    printf 'Missing prerequisite: %s. See README.md Environment Setup.\n' "$tool" >&2
+    exit 1
+  fi
+done
+
+cd "$root_dir"
+# Checksums include filenames so deletions and renames invalidate a stage too.
+fingerprint() {
+  for input_path in "$@"; do
+    if [ -d "$input_path" ]; then
+      find "$input_path" -type f | LC_ALL=C sort | while IFS= read -r input_file; do
+        cksum "$input_file"
+      done
+    else
+      cksum "$input_path"
+    fi
+  done
+}
+
+matches() {
+  [ -f "$1" ] && [ "$(cat "$1")" = "$2" ]
+}
 
 goos=${target%/*}
 goarch=${target#*/}
@@ -57,20 +89,71 @@ media_archive="$media_download_dir/$media_archive_name"
 media_extract_dir="$media_download_dir/extracted"
 media_binary="$media_extract_dir/mediamtx"
 
+did_work=0
+deps_stamp="web/node_modules/.bigbrother-deps"
+deps_fingerprint=$({
+  fingerprint web/package.json web/package-lock.json
+  node --version
+  npm --version
+  uname -sm
+} | cksum)
+deps_changed=0
+if ! matches "$deps_stamp" "$deps_fingerprint" || \
+   [ ! -x web/node_modules/.bin/esbuild ] || [ ! -x web/node_modules/.bin/tsc ]; then
+  printf '%s\n' 'Installing frontend dependencies...'
+  (cd web && npm ci --no-audit --no-fund)
+  printf '%s\n' "$deps_fingerprint" > "$deps_stamp"
+  deps_changed=1
+  did_work=1
+fi
+
 mkdir -p "$out_dir/web"
-(
-  cd "$root_dir/web"
-  npm ci
-  npm run build
-  npm run typecheck
-)
-cp "$root_dir/web/index.html" "$out_dir/web/index.html"
-cp "$root_dir/web/dist/app.js" "$out_dir/web/app.js"
-cp "$root_dir/web/dist/app.css" "$out_dir/web/app.css"
-(
-  cd "$root_dir/backends/go"
-  GOMODCACHE="$root_dir/tmp/go-mod-cache" GOCACHE="$root_dir/tmp/go-build-cache" GOOS="$goos" GOARCH="$goarch" CGO_ENABLED=0 go build -trimpath -o "$out_dir/bigbrother" ./cmd/bigbrother
-)
+web_fingerprint=$({
+  fingerprint web/src web/index.html web/tsconfig.json scripts/build
+  printf '%s\n' "$deps_fingerprint"
+} | cksum)
+if [ "$deps_changed" -eq 1 ] || ! matches "$out_dir/.web-inputs" "$web_fingerprint" || \
+   [ ! -f web/dist/app.js ] || [ ! -f web/dist/app.css ] || \
+   [ ! -f "$out_dir/web/index.html" ] || [ ! -f "$out_dir/web/app.js" ] || [ ! -f "$out_dir/web/app.css" ]; then
+  printf '%s\n' 'Building frontend...'
+  rm -f "$out_dir/.web-inputs"
+  (cd web && npm run build && npm run typecheck)
+  cp web/index.html "$out_dir/web/index.html"
+  cp web/dist/app.js "$out_dir/web/app.js"
+  cp web/dist/app.css "$out_dir/web/app.css"
+  printf '%s\n' "$web_fingerprint" > "$out_dir/.web-inputs"
+  did_work=1
+fi
+
+go_fingerprint=$({
+  fingerprint backends/go/cmd backends/go/internal backends/go/go.mod backends/go/go.sum scripts/build
+  go version
+  printf '%s\n' "$target"
+} | cksum)
+if ! matches "$out_dir/.go-inputs" "$go_fingerprint" || [ ! -x "$out_dir/bigbrother" ]; then
+  printf '%s\n' 'Building Go backend...'
+  rm -f "$out_dir/.go-inputs"
+  (
+    cd backends/go
+    GOMODCACHE="$root_dir/tmp/go-mod-cache" GOCACHE="$root_dir/tmp/go-build-cache" GOOS="$goos" GOARCH="$goarch" CGO_ENABLED=0 go build -trimpath -o "$out_dir/bigbrother" ./cmd/bigbrother
+  )
+  printf '%s\n' "$go_fingerprint" > "$out_dir/.go-inputs"
+  did_work=1
+fi
+
+media_fingerprint=$(fingerprint media/mediamtx.yml scripts/build | cksum)
+if matches "$out_dir/.media-inputs" "$media_fingerprint" && \
+   [ -x "$out_dir/media/mediamtx" ] && [ -f "$out_dir/media/LICENSE" ] && \
+   [ -f "$out_dir/media/mediamtx.yml" ] && [ -f "$out_dir/media/VERSION" ]; then
+  if [ "$did_work" -eq 0 ]; then
+    printf '%s\n' 'Everything is up to date.'
+  else
+    printf 'Built %s in %s\n' "$target" "$out_dir"
+  fi
+  exit 0
+fi
+printf '%s\n' 'Packaging MediaMTX...'
+rm -f "$out_dir/.media-inputs"
 
 if [ ! -f "$root_dir/media/mediamtx.yml" ]; then
   printf '%s\n' "MediaMTX config is missing at $root_dir/media/mediamtx.yml" >&2
@@ -85,7 +168,8 @@ if [ ! -f "$media_archive" ]; then
   fi
   curl --fail --location --retry 2 --silent --show-error \
     "https://github.com/bluenviron/mediamtx/releases/download/v$media_version/$media_archive_name" \
-    --output "$media_archive"
+    --output "$media_archive.part"
+  mv "$media_archive.part" "$media_archive"
 fi
 
 if command -v sha256sum >/dev/null 2>&1; then
@@ -118,5 +202,6 @@ cp "$media_binary" "$out_dir/media/mediamtx"
 cp "$media_extract_dir/LICENSE" "$out_dir/media/LICENSE"
 cp "$root_dir/media/mediamtx.yml" "$out_dir/media/mediamtx.yml"
 printf 'v%s\n' "$media_version" > "$out_dir/media/VERSION"
+printf '%s\n' "$media_fingerprint" > "$out_dir/.media-inputs"
 
 printf 'Built %s in %s\n' "$target" "$out_dir"
